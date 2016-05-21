@@ -2,7 +2,13 @@
 
 import notmuch
 import urwid
+import io
+import os
+import email.parser
+import logging
 from collections import defaultdict
+
+VERSION = "0.1"
 
 class HeaderBar(urwid.Text):
     def __init__(self, nm_msg):
@@ -20,29 +26,61 @@ class HeaderBar(urwid.Text):
 
 
 class MessageList(urwid.ListBox):
-    def __init__(self, folder_name):
+    def __init__(self, folder_name, msgid=None):
+        """
+        Show a list of messages in the given folder.
+
+        If msgid is not None, is is the currently focused message ID.
+        """
+        self.folder_name = folder_name
+        focus_position = None
         with notmuch.Database() as db:
             query = db.create_query("folder:" + folder_name)
             query.set_sort(notmuch.Query.SORT.NEWEST_FIRST)
             w_messages = []
             for msg in query.search_messages():
+                if not os.path.exists(msg.get_filename()): continue
+                if msgid and msg.get_message_id() == msgid:
+                    focus_position = len(w_messages)
                 header_bar = HeaderBar(msg)
                 w_messages.append(urwid.AttrMap(header_bar, "headerline", "headerline_current"))
         all_items = urwid.SimpleFocusListWalker(w_messages)
         super().__init__(all_items)
+        if focus_position is not None:
+            self.set_focus(focus_position, coming_from="above")
 
     def keypress(self, size, key):
         if key == "enter":
-            urwid.emit_signal(self, "message_selected", self.focus.original_widget.nm_msg_id)
+            urwid.emit_signal(self, "message_selected", self.folder_name, self.focus.original_widget.nm_msg_id)
         else:
             return super().keypress(size, key)
 urwid.register_signal(MessageList, "message_selected")
 
 
-class MessageShow(urwid.Text):
-    def __init__(self, app, msgid):
-        pass
+class MessageShow(urwid.ListBox):
+    def __init__(self, folder_name, msgid):
+        self.folder_name = folder_name
+        self.msgid = msgid
+        with notmuch.Database() as db:
+            nm_msg = db.find_message(msgid)
+            for tag in nm_msg.get_tags():
+                logging.debug("MessageShow %s tag %s", msgid, tag)
+            pathname = nm_msg.get_filename()
+            parser = email.parser.BytesParser()
+            with io.open(pathname, "rb") as fd:
+                #with open("/tmp/log", "at") as log:
+                #    print(repr(next(fd)), file=log)
+                msg = parser.parse(fd)
+        #logging.debug("MessageShow %s", repr(msg.as_string()))
+        lines = urwid.SimpleListWalker([urwid.Text(line) for line in msg.as_string().splitlines()])
+        super().__init__(lines)
 
+    def keypress(self, size, key):
+        if key in ("q", "Q"):
+            urwid.emit_signal(self, "folder_selected", self.folder_name, self.msgid)
+        else:
+            return super().keypress(size, key)
+urwid.register_signal(MessageShow, "folder_selected")
 
 
 class Application:
@@ -57,19 +95,39 @@ class Application:
         if key in ("q", "Q"):
             raise urwid.ExitMainLoop()
 
-    def show_folder(self, folder_name):
-        msglist = MessageList(folder_name)
+    def show_folder(self, folder_name, msgid=None):
+        logging.info("show_folder %s", folder_name)
+        msglist = MessageList(folder_name, msgid=msgid)
         urwid.connect_signal(msglist, "message_selected", self.show_message)
         self.w_mainloop.widget = msglist
 
-    def show_message(self, msgid):
-        pass
+    def show_message(self, folder_name, msgid):
+        logging.info("show_message %s %s", folder_name, msgid)
+        msgshow = MessageShow(folder_name, msgid)
+        urwid.connect_signal(msgshow, "folder_selected", self.show_folder)
+        self.w_mainloop.widget = msgshow
 
     def main(self):
         self.w_mainloop.run()
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Enrico's getting things done")
+    parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
+    parser.add_argument("--verbose", "-v", action="store_true", help="verbose output")
+    parser.add_argument("--debug", action="store_true", help="debug output")
+    args = parser.parse_args()
+
+    # Setup logging
+    FORMAT = "%(asctime)-15s %(levelname)s %(message)s"
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, filename="inbox.log", filemode="wt", format=FORMAT)
+    elif args.verbose:
+        logging.basicConfig(level=logging.INFO, filename="inbox.log", filemode="wt", format=FORMAT)
+    else:
+        logging.basicConfig(level=logging.CRITICAL, handlers=[logging.NullHandler()])
+
     with notmuch.Database() as db:
         app = Application(db)
         app.show_folder(".0-unibo")
