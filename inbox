@@ -5,6 +5,7 @@ import urwid
 import io
 import os
 import email.parser
+import subprocess
 import logging
 from collections import defaultdict
 
@@ -59,6 +60,9 @@ urwid.register_signal(MessageList, "message_selected")
 
 class MessageShow(urwid.ListBox):
     def __init__(self, folder_name, msgid):
+        """
+        Show a message in a folder.
+        """
         self.folder_name = folder_name
         self.msgid = msgid
         with notmuch.Database() as db:
@@ -90,19 +94,35 @@ class Application:
             ("headerline_current", "black", "light gray"),
         ]
         self.w_mainloop = urwid.MainLoop(None, self.palette, unhandled_input=self.unhandled_keypress)
+        self.current_folder = None
+        self.current_msgid = None
 
     def unhandled_keypress(self, key):
         if key in ("q", "Q"):
             raise urwid.ExitMainLoop()
+        elif key == "m":
+            logging.debug('stop urwid screen')
+            self.w_mainloop.screen.stop()
+            cmd = ["mutt", "-f", "=" + self.current_folder]
+            if self.current_msgid:
+                cmd += ["-e", "push /~i" + self.current_msgid + "\\n\\n"]
+            logging.debug("call %r", cmd)
+            subprocess.check_call(cmd)
+            logging.debug('start urwid screen')
+            self.w_mainloop.screen.start()
 
     def show_folder(self, folder_name, msgid=None):
         logging.info("show_folder %s", folder_name)
+        self.current_folder = folder_name
+        self.current_msgid = msgid
         msglist = MessageList(folder_name, msgid=msgid)
         urwid.connect_signal(msglist, "message_selected", self.show_message)
         self.w_mainloop.widget = msglist
 
     def show_message(self, folder_name, msgid):
         logging.info("show_message %s %s", folder_name, msgid)
+        self.current_folder = folder_name
+        self.current_msgid = msgid
         msgshow = MessageShow(folder_name, msgid)
         urwid.connect_signal(msgshow, "folder_selected", self.show_folder)
         self.w_mainloop.widget = msgshow
