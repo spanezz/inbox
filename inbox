@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+
+import notmuch
+import urwid
+from collections import defaultdict
+
+class HeaderBar(urwid.Text):
+    def __init__(self, nm_msg):
+        self.nm_msg_from = nm_msg.get_header("From")
+        self.nm_msg_subj = nm_msg.get_header("Subject")
+        self.nm_msg_id = nm_msg.get_message_id()
+        bar = self.nm_msg_from.ljust(40)[:40] + " " + self.nm_msg_subj
+        super().__init__(bar, wrap="clip")
+
+    def selectable(self):
+        return True
+
+    def keypress(self, size, key):
+        return key
+
+
+class MessageList(urwid.ListBox):
+    def __init__(self, folder_name):
+        with notmuch.Database() as db:
+            query = db.create_query("folder:" + folder_name)
+            query.set_sort(notmuch.Query.SORT.NEWEST_FIRST)
+            w_messages = []
+            for msg in query.search_messages():
+                header_bar = HeaderBar(msg)
+                w_messages.append(urwid.AttrMap(header_bar, "headerline", "headerline_current"))
+        all_items = urwid.SimpleFocusListWalker(w_messages)
+        super().__init__(all_items)
+
+    def keypress(self, size, key):
+        if key == "enter":
+            urwid.emit_signal(self, "message_selected", self.focus.original_widget.nm_msg_id)
+        else:
+            return super().keypress(size, key)
+urwid.register_signal(MessageList, "message_selected")
+
+
+class MessageShow(urwid.Text):
+    def __init__(self, app, msgid):
+        pass
+
+
+
+class Application:
+    def __init__(self, db):
+        self.palette = [
+            ("headerline", "light gray", "black"),
+            ("headerline_current", "black", "light gray"),
+        ]
+        self.w_mainloop = urwid.MainLoop(None, self.palette, unhandled_input=self.unhandled_keypress)
+
+    def unhandled_keypress(self, key):
+        if key in ("q", "Q"):
+            raise urwid.ExitMainLoop()
+
+    def show_folder(self, folder_name):
+        msglist = MessageList(folder_name)
+        urwid.connect_signal(msglist, "message_selected", self.show_message)
+        self.w_mainloop.widget = msglist
+
+    def show_message(self, msgid):
+        pass
+
+    def main(self):
+        self.w_mainloop.run()
+
+
+def main():
+    with notmuch.Database() as db:
+        app = Application(db)
+        app.show_folder(".0-unibo")
+        app.main()
+        del app
+        import gc
+        gc.collect()
+
+
+if __name__ == "__main__":
+    main()
